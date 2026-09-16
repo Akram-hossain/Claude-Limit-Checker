@@ -246,7 +246,12 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
     UsageLimit *session = [self sessionLimit];
     UsageLimit *weekly = nil;
     for (UsageLimit *l in self.limits) {
-        if ([l.kind hasPrefix:@"weekly"] && (!weekly || l.percent > weekly.percent)) weekly = l;
+        if ([l.kind isEqualToString:@"weekly_all"]) { weekly = l; break; }
+    }
+    if (!weekly) {  // fallback: highest of whatever weekly limits exist
+        for (UsageLimit *l in self.limits) {
+            if ([l.kind hasPrefix:@"weekly"] && (!weekly || l.percent > weekly.percent)) weekly = l;
+        }
     }
 
     NSMutableAttributedString *text = [NSMutableAttributedString new];

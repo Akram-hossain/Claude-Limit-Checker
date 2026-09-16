@@ -229,6 +229,11 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
                                        initWithTarget:self action:@selector(panelClicked:)];
     [blur addGestureRecognizer:click];
 
+    NSClickGestureRecognizer *rightClick = [[NSClickGestureRecognizer alloc]
+                                            initWithTarget:self action:@selector(panelClicked:)];
+    rightClick.buttonMask = 0x2;  // secondary (right) mouse button
+    [blur addGestureRecognizer:rightClick];
+
     self.panel = panel;
     [self updatePanel];
     if (![NSUserDefaults.standardUserDefaults boolForKey:kHideFloatingMeterKey]) {
@@ -537,11 +542,11 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
     openItem.target = self;
     [menu addItem:openItem];
 
-    NSMenuItem *floatItem = [[NSMenuItem alloc] initWithTitle:@"Floating Meter (bottom right)"
-                                                       action:@selector(toggleFloatingMeter) keyEquivalent:@""];
+    BOOL meterHidden = [NSUserDefaults.standardUserDefaults boolForKey:kHideFloatingMeterKey];
+    NSMenuItem *floatItem = [[NSMenuItem alloc]
+        initWithTitle:meterHidden ? @"Show Floating Meter (bottom right)" : @"Hide Floating Meter"
+               action:@selector(toggleFloatingMeter) keyEquivalent:@""];
     floatItem.target = self;
-    floatItem.state = [NSUserDefaults.standardUserDefaults boolForKey:kHideFloatingMeterKey]
-                      ? NSControlStateValueOff : NSControlStateValueOn;
     [menu addItem:floatItem];
 
     if (@available(macOS 13.0, *)) {

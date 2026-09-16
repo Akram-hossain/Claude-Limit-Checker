@@ -1,0 +1,4 @@
+# Build artifacts — colleagues build their own with ./build.sh
+Claude Meter.app/
+*.zip
+.DS_Store

@@ -145,7 +145,7 @@ static NSImage *ClaudeIcon(void) {
 
 static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
 
-@interface AppDelegate : NSObject <NSApplicationDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, strong) NSArray<UsageLimit *> *limits;
@@ -158,7 +158,16 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
 @property (nonatomic, strong) NSTextField *brandLabel;
 @property (nonatomic) BOOL didShowSetupAlert;
 @property (nonatomic, strong) NSDate *backoffUntil;
+@property (nonatomic) NSTimeInterval backoffSeconds;
 @end
+
+// Background polling is deliberately gentle: the usage endpoint is rate
+// limited, and these percentages move slowly. Opening the menu triggers a
+// fresh read, so low background frequency costs nothing in practice.
+static const NSTimeInterval kPollInterval = 300;     // 5 minutes = 12 requests/hour
+static const NSTimeInterval kMenuRefreshGap = 60;    // don't re-fetch if data is newer than this
+static const NSTimeInterval kBackoffStart = 300;
+static const NSTimeInterval kBackoffMax = 3600;
 
 @implementation AppDelegate
 
@@ -172,9 +181,9 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
     [self setUpFloatingPanel];
 
     [self refresh];
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:120 target:self
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:kPollInterval target:self
                                                 selector:@selector(scheduledRefresh) userInfo:nil repeats:YES];
-    self.timer.tolerance = 10;
+    self.timer.tolerance = 30;
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(didWake)
                                                            name:NSWorkspaceDidWakeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(positionPanel)
@@ -408,12 +417,14 @@ static NSURLSession *UsageSession(void) {
                 return;
             }
             if (code == 429) {
-                // Rate limited: back off, honouring Retry-After when present.
-                double wait = 300;
+                // Rate limited: back off exponentially, honouring Retry-After
+                // when the server sends a usable one.
+                __block double wait = MAX(self.backoffSeconds, kBackoffStart);
                 NSString *retryAfter = ((NSHTTPURLResponse *)response).allHeaderFields[@"Retry-After"];
-                if (retryAfter.doubleValue > 0) wait = MIN(retryAfter.doubleValue, 3600);
+                if (retryAfter.doubleValue > 0) wait = MIN(retryAfter.doubleValue, kBackoffMax);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     self.backoffUntil = [NSDate dateWithTimeIntervalSinceNow:wait];
+                    self.backoffSeconds = MIN(wait * 2, kBackoffMax);
                 });
                 [self finishWithLimits:nil
                                  error:[NSString stringWithFormat:@"Rate limited — retrying in %@",
@@ -492,6 +503,7 @@ static NSURLSession *UsageSession(void) {
             self.fetchedAt = [NSDate date];
             self.lastError = nil;
             self.backoffUntil = nil;
+            self.backoffSeconds = 0;
         } else {
             self.lastError = error;
             // First-run help: no credentials and never fetched successfully
@@ -556,8 +568,17 @@ static NSURLSession *UsageSession(void) {
     button.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:attrs];
 }
 
+// Looking at the numbers is the moment they should be current — but only
+// re-fetch if what we have is stale and we are not backing off.
+- (void)menuWillOpen:(NSMenu *)menu {
+    if (self.backoffUntil && self.backoffUntil.timeIntervalSinceNow > 0) return;
+    if (self.fetchedAt && -self.fetchedAt.timeIntervalSinceNow < kMenuRefreshGap) return;
+    [self refresh];
+}
+
 - (NSMenu *)buildMenu {
     NSMenu *menu = [NSMenu new];
+    menu.delegate = self;
 
     for (UsageLimit *limit in self.limits) {
         NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];

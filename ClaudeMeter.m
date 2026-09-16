@@ -327,10 +327,25 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
 }
 
 - (void)toggleFloatingMeter {
-    BOOL hidden = [NSUserDefaults.standardUserDefaults boolForKey:kHideFloatingMeterKey];
-    [NSUserDefaults.standardUserDefaults setBool:!hidden forKey:kHideFloatingMeterKey];
-    if (hidden) [self.panel orderFrontRegardless];
-    else [self.panel orderOut:nil];
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    BOOL hidden = [defaults boolForKey:kHideFloatingMeterKey];
+    [defaults setBool:!hidden forKey:kHideFloatingMeterKey];
+    if (hidden) {
+        [self.panel orderFrontRegardless];
+    } else {
+        [self.panel orderOut:nil];
+        // Once the panel is gone, the menu bar icon is the only way back — say so.
+        if (![defaults boolForKey:@"DidExplainHiding"]) {
+            [defaults setBool:YES forKey:@"DidExplainHiding"];
+            NSAlert *alert = [NSAlert new];
+            alert.messageText = @"Floating meter hidden";
+            alert.informativeText = @"Claude Meter is still running. To bring the floating meter back, "
+                                    @"click the ring icon in the menu bar (top right of your screen) "
+                                    @"and choose \"Show Floating Meter\".";
+            [alert addButtonWithTitle:@"OK"];
+            [alert runModal];
+        }
+    }
     self.statusItem.menu = [self buildMenu];
 }
 

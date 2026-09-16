@@ -157,6 +157,7 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
 @property (nonatomic, strong) NSImageView *brandIcon;
 @property (nonatomic, strong) NSTextField *brandLabel;
 @property (nonatomic) BOOL didShowSetupAlert;
+@property (nonatomic, strong) NSDate *backoffUntil;
 @end
 
 @implementation AppDelegate
@@ -171,8 +172,8 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
     [self setUpFloatingPanel];
 
     [self refresh];
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:60 target:self
-                                                selector:@selector(refresh) userInfo:nil repeats:YES];
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:120 target:self
+                                                selector:@selector(scheduledRefresh) userInfo:nil repeats:YES];
     self.timer.tolerance = 10;
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(didWake)
                                                            name:NSWorkspaceDidWakeNotification object:nil];
@@ -351,8 +352,33 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
 
 - (void)didWake {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        [self refresh];
+        [self scheduledRefresh];
     });
+}
+
+// Private session: the shared session persists requests — including the
+// Authorization header — to an on-disk URL cache. An ephemeral configuration
+// with no cache keeps the OAuth token in memory only, never on disk.
+static NSURLSession *UsageSession(void) {
+    static NSURLSession *session;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSURLSessionConfiguration *config = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+        config.URLCache = nil;
+        config.requestCachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
+        config.HTTPCookieStorage = nil;
+        config.URLCredentialStorage = nil;
+        config.HTTPShouldSetCookies = NO;
+        session = [NSURLSession sessionWithConfiguration:config];
+    });
+    return session;
+}
+
+// Timer-driven refresh: respects the backoff window set after a 429.
+// The menu's "Refresh Now" calls -refresh directly and always tries.
+- (void)scheduledRefresh {
+    if (self.backoffUntil && self.backoffUntil.timeIntervalSinceNow > 0) return;
+    [self refresh];
 }
 
 - (void)refresh {
@@ -368,8 +394,9 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
         [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
         [request setValue:@"oauth-2025-04-20" forHTTPHeaderField:@"anthropic-beta"];
         request.timeoutInterval = 20;
+        request.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
 
-        [[NSURLSession.sharedSession dataTaskWithRequest:request
+        [[UsageSession() dataTaskWithRequest:request
                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             if (error) {
                 [self finishWithLimits:nil error:[@"Network error: " stringByAppendingString:error.localizedDescription]];
@@ -378,6 +405,19 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
             NSInteger code = ((NSHTTPURLResponse *)response).statusCode;
             if (code == 401) {
                 [self finishWithLimits:nil error:@"Token expired — open Claude Code once to refresh"];
+                return;
+            }
+            if (code == 429) {
+                // Rate limited: back off, honouring Retry-After when present.
+                double wait = 300;
+                NSString *retryAfter = ((NSHTTPURLResponse *)response).allHeaderFields[@"Retry-After"];
+                if (retryAfter.doubleValue > 0) wait = MIN(retryAfter.doubleValue, 3600);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.backoffUntil = [NSDate dateWithTimeIntervalSinceNow:wait];
+                });
+                [self finishWithLimits:nil
+                                 error:[NSString stringWithFormat:@"Rate limited — retrying in %@",
+                                        Countdown([NSDate dateWithTimeIntervalSinceNow:wait])]];
                 return;
             }
             if (code != 200) {
@@ -451,6 +491,7 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
             self.limits = limits;
             self.fetchedAt = [NSDate date];
             self.lastError = nil;
+            self.backoffUntil = nil;
         } else {
             self.lastError = error;
             // First-run help: no credentials and never fetched successfully

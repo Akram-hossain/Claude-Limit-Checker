@@ -42,6 +42,31 @@ that prompt appear once again.
 
 To have it start automatically, click the menu bar icon → **Launch at Login**.
 
+## Security & privacy
+
+What the app does with your credentials:
+
+- **Reads** the OAuth token Claude Code already stores in your login Keychain
+  (service `Claude Code-credentials`). macOS asks your permission on first
+  launch; the token is held in memory only for the duration of each request.
+- **Sends** it to exactly one place: `https://api.anthropic.com/api/oauth/usage`,
+  over HTTPS, in an `Authorization` header. No other network destination exists
+  in the code.
+- **Never writes** the token anywhere — not to disk, logs, or preferences. The
+  network layer uses an *ephemeral* `NSURLSession` with caching disabled,
+  because the default shared session persists request headers (including the
+  bearer token) to a plaintext cache in `~/Library/Caches/`.
+- **Stores** only one thing locally: a boolean preference for whether the
+  floating meter is visible.
+
+Build hardening: the binary is compiled with the **hardened runtime** enabled
+(`codesign --options runtime`), which blocks other processes from attaching a
+debugger and reading the token out of memory.
+
+Trust model: the app is distributed as source, so anyone with write access to
+this repository could change what it does. Read the code before you build it —
+it is one file, and this section describes all of it.
+
 ## Sharing with colleagues
 
 Each person needs their own Claude subscription and the Claude Code CLI signed

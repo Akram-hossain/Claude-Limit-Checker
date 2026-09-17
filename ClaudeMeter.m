@@ -81,6 +81,12 @@ static NSString *Countdown(NSDate *target) {
     return [NSString stringWithFormat:@"%ldm", (long)minutes];
 }
 
+static NSString *ClockCountdown(NSDate *target) {
+    NSInteger s = MAX(0, (NSInteger)ceil(target.timeIntervalSinceNow));
+    return [NSString stringWithFormat:@"%ld:%02ld:%02ld",
+            (long)(s / 3600), (long)((s % 3600) / 60), (long)(s % 60)];
+}
+
 // Progress ring for the menu bar. Template (black) adapts to the bar theme;
 // warning states are drawn in orange/red.
 static NSImage *RingImage(double percent, BOOL warning) {
@@ -159,6 +165,8 @@ static NSString *const kHideFloatingMeterKey = @"HideFloatingMeter";
 @property (nonatomic) BOOL didShowSetupAlert;
 @property (nonatomic, strong) NSDate *backoffUntil;
 @property (nonatomic) NSTimeInterval backoffSeconds;
+@property (nonatomic, strong) NSTimer *countdownTimer;
+@property (nonatomic, strong) NSDate *resetRefreshRequestedFor;
 @end
 
 // Background polling is deliberately gentle: the usage endpoint is rate
@@ -179,6 +187,12 @@ static const NSTimeInterval kBackoffMax = 3600;
     self.statusItem.menu = [self buildMenu];
 
     [self setUpFloatingPanel];
+
+    // Local 1-second tick for the reset countdown — no network involved.
+    self.countdownTimer = [NSTimer timerWithTimeInterval:1 target:self
+                                                selector:@selector(tickCountdown) userInfo:nil repeats:YES];
+    self.countdownTimer.tolerance = 0.1;
+    [NSRunLoop.mainRunLoop addTimer:self.countdownTimer forMode:NSRunLoopCommonModes];
 
     [self refresh];
     self.timer = [NSTimer scheduledTimerWithTimeInterval:kPollInterval target:self
@@ -298,6 +312,7 @@ static const NSTimeInterval kBackoffMax = 3600;
     // Compact two-line layout:
     //   ✳ Claude Limit
     //   ◔ 33% · wk 20%
+    [self applyBrandTitle];
     CGFloat height = 48, pad = 10;
     CGFloat topRowY = height - 12 - 8;
     CGFloat row1W = 12 + 4 + NSWidth(self.brandLabel.frame);
@@ -318,6 +333,38 @@ static const NSTimeInterval kBackoffMax = 3600;
     [self.panel setFrame:frame display:YES];
     self.panel.contentView.frame = NSMakeRect(0, 0, width, height);
     [self positionPanel];
+}
+
+// Title row: "Claude Limit  ↻ 2:14:05" — time left until the session limit resets.
+- (void)applyBrandTitle {
+    NSMutableAttributedString *title = [[NSMutableAttributedString alloc]
+        initWithString:@"Claude Limit"
+            attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+                         NSForegroundColorAttributeName: NSColor.secondaryLabelColor}];
+    NSDate *reset = [self sessionLimit].resetsAt;
+    if (reset && reset.timeIntervalSinceNow > 0) {
+        [title appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[@"  ↻ " stringByAppendingString:ClockCountdown(reset)]
+                attributes:@{NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightMedium],
+                             NSForegroundColorAttributeName: NSColor.secondaryLabelColor}]];
+    }
+    self.brandLabel.attributedStringValue = title;
+    [self.brandLabel sizeToFit];
+}
+
+- (void)tickCountdown {
+    // Once the session window has rolled over, fetch the fresh numbers (once per reset).
+    NSDate *reset = [self sessionLimit].resetsAt;
+    if (reset && reset.timeIntervalSinceNow <= -5 &&
+        ![self.resetRefreshRequestedFor isEqualToDate:reset]) {
+        self.resetRefreshRequestedFor = reset;
+        [self scheduledRefresh];
+    }
+
+    if (!self.panel.isVisible) return;
+    CGFloat oldWidth = NSWidth(self.brandLabel.frame);
+    [self applyBrandTitle];
+    if (NSWidth(self.brandLabel.frame) != oldWidth) [self updatePanel];
 }
 
 - (void)positionPanel {
